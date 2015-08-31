@@ -2,7 +2,7 @@
 
 A lightweight PHP based deploy framework, that works on safe mode servers
 
-## Usage
+## Install
 
 1. Check out the repository
 2. Run a composer update
