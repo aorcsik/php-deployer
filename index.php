@@ -1,6 +1,7 @@
 <?php
 
 use Silex\Application;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\Request;
 
 require_once __DIR__ . '/vendor/autoload.php';
@@ -48,6 +49,11 @@ function recurse_copy($src, $dst) {
 $app->post('/deploy/{service}', function(Application $app, Request $request, $service) {
     if (isset($app['config'][$service])) {
         $config = $app['config'][$service];
+
+        $secret = $request->get("secret");
+        if ($secret != $config['secret']) {
+            return new Response("Forbidden", 403, array('Content-Type' => 'text/plain'));
+        }
 
         $file = $request->files->get("artifact");
         if ($file) {
