@@ -6,9 +6,6 @@ use Symfony\Component\HttpFoundation\Request;
 
 require_once __DIR__ . '/vendor/autoload.php';
 
-// date_default_timezone_set(APP_TIMEZONE);
-// setlocale(LC_CTYPE, APP_LOCALE);
-
 $app = new Application();
 $app['debug'] = true;
 
@@ -37,9 +34,9 @@ function recurse_copy($src, $dst) {
     while (false !== ($file = readdir($dir))) {
         if (($file != '.') && ($file != '..')) {
             if (is_dir($src . '/' . $file)) {
-                recurse_copy($src . '/' . $file,$dst . '/' . $file);
+                recurse_copy($src . '/' . $file, $dst . '/' . $file);
             } else {
-                copy($src . '/' . $file,$dst . '/' . $file);
+                copy($src . '/' . $file, $dst . '/' . $file);
             }
         }
     }
@@ -91,6 +88,21 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
             @rename($deploy_target, $config['current_path']);
             echo "New build deployed\n";
         }
+
+        return "Done!";
+    }
+});
+
+$app->post('/rollback/{service}', function(Application $app, Request $request, $service) {
+    if (isset($app['config'][$service])) {
+        $config = $app['config'][$service];
+
+        $secret = $request->get("secret");
+        if ($secret != $config['secret']) {
+            return new Response("Forbidden", 403, array('Content-Type' => 'text/plain'));
+        }
+
+        @rename($config['old_path'], $config['current_path']);
 
         return "Done!";
     }
