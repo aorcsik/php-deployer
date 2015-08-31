@@ -17,6 +17,19 @@ foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . 
     }
 }
 
+function recursive_unlink($dir) {
+    $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
+    $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
+    foreach($files as $file) {
+        if ($file->isDir()){
+            rmdir($file->getRealPath());
+        } else {
+            unlink($file->getRealPath());
+        }
+    }
+    rmdir($dir);
+}
+
 function recurse_copy($src, $dst) {
     $dir = opendir($src);
     @mkdir($dst);
@@ -62,8 +75,11 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
             }
 
             if (file_exists($config['current_path'])) {
+                echo "Removing old backup: ";
+                recursive_unlink($config['old_path']);
+                echo "OK\nCopying new backup: ";
                 recurse_copy($config['current_path'], $config['old_path']);
-                echo "Old build backed up\n";
+                echo "OK\nBackup finished!\n";
             }
 
             @rename($deploy_target, $config['current_path']);
