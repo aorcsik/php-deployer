@@ -51,9 +51,9 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
 
             if (!empty($config['extra_files'])) {
                 foreach ($config['extra_files'] as $filename) {
-                    $extra_file_path = __DIR__ . "services/" . $service . "/" . $filename;
+                    $extra_file_path = __DIR__ . "/services/" . $service . "/" . $filename;
                     if (file_exists($extra_file_path)) {
-                        copy(__DIR__ . "services/" . $service . "/" . $filename, $deploy_target . "/" . $filename);
+                        copy($extra_file_path, $deploy_target . "/" . $filename);
                     } else {
                         echo "WARNING: Missing extra file: " . $filename . "\n";
                     }
