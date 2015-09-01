@@ -2,6 +2,10 @@
 
 A lightweight PHP based deploy framework, that works on safe mode servers
 
+## Requirements
+- PHP >= 5.3.9
+- [Composer](https://getcomposer.org)
+
 ## Install
 
 1. Check out the repository
@@ -51,7 +55,7 @@ curl -F "artifact=@$ARTIFACT" -F "secret=<DEPLOYMENT_SECRET>" <URL_OF_DEPLOYER>/
 - `<LIST_OF_INCLUDED_FILES>`: files and folders you want to publish
 - `<DOMAIN_OF_DEPLOYER>`: the url to the deployer's root
 
-## Rollback (Not yet implemented!)
+## Rollback
 
 After the initial deploy every new one will back up the previous build. If anything goes wrong
 you can easily roll back with a rollback script, which looks like this:
