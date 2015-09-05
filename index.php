@@ -16,16 +16,18 @@ foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . 
 }
 
 function recursive_unlink($dir) {
-    $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
-    $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
-    foreach($files as $file) {
-        if ($file->isDir()){
-            rmdir($file->getRealPath());
-        } else {
-            unlink($file->getRealPath());
+    if (file_exists($dir)) {
+        $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
+        $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
+        foreach($files as $file) {
+            if ($file->isDir()){
+                rmdir($file->getRealPath());
+            } else {
+                unlink($file->getRealPath());
+            }
         }
+        rmdir($dir);
     }
-    rmdir($dir);
 }
 
 function recurse_copy($src, $dst) {
@@ -56,13 +58,17 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
         if ($file) {
             echo "Archive uploaded\n";
 
-            $archive = new Archive_Tar($file->getPathname());
-            $deploy_target = $file->getPathname() . ".deploy";
+            $temp_path = __DIR__ . "/tmp/";
+            @mkdir($temp_path, 0777);
+            $file->move($temp_path, $file->getFilename());
+            $artifact = $temp_path . $file->getFilename();
+            $archive = new Archive_Tar($artifact);
+            $deploy_target = $artifact . ".deploy";
             if (!file_exists($deploy_target)) mkdir($deploy_target, 0777);
             $archive->extract($deploy_target);
             echo "Archive extracted\n";
 
-            unlink($file->getPathname());
+            unlink($artifact);
             echo "Archive deleted\n";
 
             if (!empty($config['extra_files'])) {
@@ -85,8 +91,11 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
                 echo "OK\nBackup finished!\n";
             }
 
-            @rename($deploy_target, $config['current_path']);
-            echo "New build deployed\n";
+            echo "Removing old current: ";
+            recursive_unlink($config['current_path']);
+            echo "OK\nCopying new current: ";
+            recurse_copy($deploy_target, $config['current_path']);
+            echo "OK\nNew build deployed!\n";
         }
 
         return "Done!";
@@ -102,7 +111,8 @@ $app->post('/rollback/{service}', function(Application $app, Request $request, $
             return new Response("Forbidden", 403, array('Content-Type' => 'text/plain'));
         }
 
-        @rename($config['old_path'], $config['current_path']);
+        recursive_unlink($config['current_path']);
+        recurse_copy($config['old_path'], $config['current_path']);
 
         return "Done!";
     }
