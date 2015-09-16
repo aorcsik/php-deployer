@@ -43,7 +43,7 @@ files, if you want to store them online.
 You have to create a deploy script which assembles the deploy artifact. This will be a
 tarball archive (`.tar.gz`) which should only contain the files and folders you want to publish.
 You can add the environment specific configuration files here (or later, see Extra files). A basic
-deploy script (for *nix system) should look something like this:
+deploy script (on a Unix-like system) should look something like this:
 
 ```sh
 #!/bin/sh

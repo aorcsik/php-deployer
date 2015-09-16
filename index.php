@@ -15,18 +15,20 @@ foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . 
     }
 }
 
-function recursive_unlink($dir) {
-    if (file_exists($dir)) {
-        $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
+function recursive_unlink($root_dir) {
+    if (is_dir($root_dir)) {
+        $root_dir = preg_replace("'/*$'", "/", $root_dir);  // add trailing slash
+        $it = new RecursiveDirectoryIterator($root_dir, RecursiveDirectoryIterator::SKIP_DOTS);
         $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
         foreach($files as $file) {
+            $path = $file->getRealPath();
             if ($file->isDir()){
-                rmdir($file->getRealPath());
+                rmdir($path);
             } else {
-                unlink($file->getRealPath());
+                unlink($path);
             }
         }
-        rmdir($dir);
+        rmdir($root_dir);
     }
 }
 
@@ -45,6 +47,262 @@ function recurse_copy($src, $dst) {
     closedir($dir);
 }
 
+class Deployer {
+
+    public static $TEMP_DIR = "/tmp/";
+
+    private $service;
+
+    private $config;
+
+    public function __construct($service, $config) {
+        $this->service = $service;
+        $this->config = $config;
+    }
+
+    private function log($level, $message) {
+        echo sprintf("%s [%s] %s\n", date("Y-m-d H:i:s"), $level, $message);
+        ob_flush();
+        flush();
+    }
+
+    private function fail() {
+        $this->log("error", "FAILED");
+        return false;
+    }
+
+    private function success($return_value=null) {
+        $this->log("info", "OK");
+        if (isset($return_value)) {
+            return $return_value;
+        }
+        return true;
+    }
+
+    private function move_artifact_to_temp($request) {
+        $file = $request->files->get("artifact");
+        if ($file) {
+            $this->log("info", "Artifact uploaded");
+
+
+            if (!is_dir(__DIR__ . self::$TEMP_DIR)) {
+                @mkdir(__DIR__ . self::$TEMP_DIR, 0777, true);
+            }
+            $artifact_name = $file->getFilename();
+            $artifact_path = __DIR__ . self::$TEMP_DIR . $artifact_name;
+            $this->log("info", "Moving artifact " . $artifact_name . " to temp...");
+            $file->move(__DIR__ . self::$TEMP_DIR, $artifact_name);
+            if (file_exists($artifact_path)) {
+                return $this->success($artifact_path);
+            }
+        }
+        return $this->fail();
+    }
+
+    private function extract_artifact($artifact_path) {
+        $this->log("info", "Extracting artifact...");
+        if (!is_dir(__DIR__ . self::$TEMP_DIR)) {
+            @mkdir(__DIR__ . self::$TEMP_DIR, 0777, true);
+        }
+        $archive = new Archive_Tar($artifact_path);
+        $new_build_path = __DIR__ . self::$TEMP_DIR . basename($artifact_path) . ".deploy";
+        if (!is_dir($new_build_path)) {
+            @mkdir($new_build_path, 0777, true);
+        }
+        if ($archive->extract($new_build_path)) {
+            return $this->success($new_build_path);
+        }
+        return $this->fail();
+    }
+
+    private function delete_artifact($artifact_path) {
+        $this->log("info", "Deleting artifact...");
+        if (file_exists($artifact_path)) {
+            unlink($artifact_path);
+        }
+        if (!file_exists($artifact_path)) {
+            return $this->success();
+        }
+        return $this->fail();
+    }
+
+    private function add_extra_files($new_build_path) {
+        if (!empty($this->config['extra_files'])) {
+            $this->log("info", "Adding extra files...");
+            foreach ($this->config['extra_files'] as $filename) {
+                $extra_file_path = __DIR__ . "/services/" . $this->service . "/" . $filename;
+                if (file_exists($extra_file_path)) {
+                    $this->log("info", "Adding extra file: " . $filename);
+                    $extra_dir = dirname($new_build_path . "/" . $filename);
+                    if (!is_dir($extra_dir)) {
+                        @mkdir($extra_dir, 0777, true);
+                    }
+                    copy($extra_file_path, $new_build_path . "/" . $filename);
+                    if (!file_exists($new_build_path . "/" . $filename)) {
+                        $this->fail();
+                    }
+                    $this->success();
+                } else {
+                    $this->log("warning", "Missing extra file: " . $filename);
+                }
+            }
+        }
+        return true;
+    }
+
+    private function add_optional_artifacts($new_build_path, $request) {
+        $exclude_optional = array();
+        if (!empty($this->config['optional_artifacts'])) {
+            $this->log("info", "Adding optional artifacts...");
+            foreach ($this->config['optional_artifacts'] as $name => $relative_path) {
+                $file = $request->files->get($name);
+                $new_data = false;
+                if ($file) {
+                    $artifact_name = $this->service . "-" . $name . "-artifact.tar.gz";
+                    $artifact_path = __DIR__ . self::$TEMP_DIR . $artifact_name;
+                    $this->log("info", "Checking artifact: " . $artifact_name);
+                    $new_data = !file_exists($artifact_path);
+                    if (!$new_data) {
+                        $old_md5 = md5_file($artifact_path);
+                        $this->log("info", "Old MD5: >" . $old_md5 . "<");
+                        $new_md5 = md5_file($file->getRealPath());
+                        $this->log("info", "New MD5: >" . $new_md5 . "<");
+                        if (strcmp($new_md5, $old_md5)) {
+                            $this->log("info", "MD5 Different: " . strcmp($new_md5, $old_md5));
+                            $new_data = true;
+                        }
+                    }
+                }
+                if ($new_data === true) {
+                    if (file_exists($artifact_path)) {
+                        unlink($artifact_path);
+                    }
+                    $this->log("info", "Moving artifact " . $artifact_name . " to temp...");
+                    $file->move(__DIR__ . self::$TEMP_DIR, $artifact_name);
+                    if (!file_exists($artifact_path)) {
+                        return $this->fail();
+                    }
+                    $this->success();
+
+                    $this->log("info", "Extracting artifact: " . $artifact_name);
+                    $archive = new Archive_Tar($artifact_path);
+                    if (!$archive->extract($new_build_path)) {
+                        return $this->fail();
+                    }
+                    $this->success();
+                } else {
+                    $this->log("info", "Use existing: " . $relative_path);
+                    rename($this->config['current_path'] . "/" . $relative_path, $new_build_path . "/" . $relative_path);
+                    if (!file_exists($new_build_path . "/" . $relative_path)) {
+                        return $this->fail();
+                    }
+                    $this->success();
+                }
+            }
+        }
+        return true;
+    }
+
+    private function backup_old_build() {
+        $this->log("info", "Backing up old build...");
+        if (file_exists($this->config['current_path'])) {
+            if (file_exists($this->config['old_path'])) {
+                $this->log("info", "Removing old backup...");
+                recursive_unlink($this->config['old_path']);
+                if (file_exists($this->config['old_path'])) {
+                    return $this->fail();
+                }
+                $this->success();
+            }
+
+            $this->log("info", "Attempting fast rename...");
+            if (@rename($this->config['current_path'], $this->config['old_path'])) {
+                $this->success();
+                $this->log("info", "Backup finished!");
+                return true;
+            }
+            $this->fail();
+
+            $this->log("info", "Copying new backup...");
+            recurse_copy($this->config['current_path'], $this->config['old_path']);
+            if (file_exists($this->config['old_path'])) {
+                $this->success();
+                $this->log("info", "Backup finished!");
+                return true;
+            }
+            return $this->fail();
+        }
+        return true;
+    }
+
+    private function deploy_new_build($new_build_path) {
+        $this->log("info", "Deploying new build...");
+        if (file_exists($this->config['current_path'])) {
+            $this->log("info", "Removing current build...");
+            recursive_unlink($this->config['current_path']);
+            if (file_exists($this->config['current_path'])) {
+                return $this->fail();
+            }
+            $this->success();
+        }
+        $this->log("info", "Attempting fast rename...");
+        if (@rename($new_build_path, $this->config['current_path'])) {
+            return $this->success();
+        }
+        $this->fail();
+        $this->log("info", "Copying new build...");
+        recurse_copy($new_build_path, $this->config['current_path']);
+        if (!file_exists($this->config['current_path'])) {
+            return $this->fail();
+        }
+        return $this->success();
+    }
+
+    public function finish($success, $new_build_path=null) {
+        if ($new_build_path) {
+            $this->log("info", "Removing extracted archive");
+            recursive_unlink($new_build_path);
+            if (file_exists($new_build_path)) {
+                return $this->fail();
+            }
+            $this->success();
+        }
+
+        if ($success) {
+            $this->log("info", "Deploy finished!");
+            return true;
+        }
+        $this->log("error", "Deploy failed!");
+        return true;
+    }
+
+    public function deploy($request) {
+        if (false === ($artifact_path = $this->move_artifact_to_temp($request)))
+            return $this->finish(false);
+
+        if (false === ($new_build_path = $this->extract_artifact($artifact_path)))
+            return $this->finish(false);
+
+        if (false === $this->delete_artifact($artifact_path))
+            return $this->finish(false, $new_build_path);
+
+//      if (false === $this->add_optional_artifacts($new_build_path, $request))
+//          return $this->finish(false, $new_build_path);
+
+        if (false === $this->add_extra_files($new_build_path))
+            return $this->finish(false, $new_build_path);
+
+        if (false === $this->backup_old_build())
+            return $this->finish(false, $new_build_path);
+
+        if (false === $this->deploy_new_build($new_build_path))
+            return $this->finish(false, $new_build_path);
+
+        return $this->finish(true, $new_build_path);
+    }
+}
+
+
 $app->post('/deploy/{service}', function(Application $app, Request $request, $service) {
     if (isset($app['config'][$service])) {
         $config = $app['config'][$service];
@@ -54,52 +312,14 @@ $app->post('/deploy/{service}', function(Application $app, Request $request, $se
             return new Response("Forbidden", 403, array('Content-Type' => 'text/plain'));
         }
 
-        $file = $request->files->get("artifact");
-        if ($file) {
-            echo "Archive uploaded\n";
+        $deployer = new Deployer($service, $config);
+        $stream = function () use ($deployer, $request) {
+            $deployer->deploy($request);
+        };
 
-            $temp_path = __DIR__ . "/tmp/";
-            @mkdir($temp_path, 0777);
-            $file->move($temp_path, $file->getFilename());
-            $artifact = $temp_path . $file->getFilename();
-            $archive = new Archive_Tar($artifact);
-            $deploy_target = $artifact . ".deploy";
-            if (!file_exists($deploy_target)) mkdir($deploy_target, 0777);
-            $archive->extract($deploy_target);
-            echo "Archive extracted\n";
-
-            unlink($artifact);
-            echo "Archive deleted\n";
-
-            if (!empty($config['extra_files'])) {
-                foreach ($config['extra_files'] as $filename) {
-                    $extra_file_path = __DIR__ . "/services/" . $service . "/" . $filename;
-                    if (file_exists($extra_file_path)) {
-                        copy($extra_file_path, $deploy_target . "/" . $filename);
-                    } else {
-                        echo "WARNING: Missing extra file: " . $filename . "\n";
-                    }
-                }
-                echo "Extra files copied\n";
-            }
-
-            if (file_exists($config['current_path'])) {
-                echo "Removing old backup: ";
-                recursive_unlink($config['old_path']);
-                echo "OK\nCopying new backup: ";
-                recurse_copy($config['current_path'], $config['old_path']);
-                echo "OK\nBackup finished!\n";
-            }
-
-            echo "Removing old current: ";
-            recursive_unlink($config['current_path']);
-            echo "OK\nCopying new current: ";
-            recurse_copy($deploy_target, $config['current_path']);
-            echo "OK\nNew build deployed!\n";
-        }
-
-        return "Done!";
+        return $app->stream($stream, 200, array('Content-Type' => 'text/plain'));
     }
+    return "ERROR: missing service: " . $service;
 });
 
 $app->post('/rollback/{service}', function(Application $app, Request $request, $service) {
@@ -112,7 +332,9 @@ $app->post('/rollback/{service}', function(Application $app, Request $request, $
         }
 
         recursive_unlink($config['current_path']);
-        recurse_copy($config['old_path'], $config['current_path']);
+        if (!@rename($config['old_path'], $config['current_path'])) {
+            recurse_copy($config['old_path'], $config['current_path']);
+        }
 
         return "Done!";
     }
