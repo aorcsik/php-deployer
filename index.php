@@ -15,38 +15,6 @@ foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . 
     }
 }
 
-function recursive_unlink($root_dir) {
-    if (is_dir($root_dir)) {
-        $root_dir = preg_replace("'/*$'", "/", $root_dir);  // add trailing slash
-        $it = new RecursiveDirectoryIterator($root_dir, RecursiveDirectoryIterator::SKIP_DOTS);
-        $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
-        foreach($files as $file) {
-            $path = $file->getRealPath();
-            if ($file->isDir()){
-                rmdir($path);
-            } else {
-                unlink($path);
-            }
-        }
-        rmdir($root_dir);
-    }
-}
-
-function recurse_copy($src, $dst) {
-    $dir = opendir($src);
-    @mkdir($dst);
-    while (false !== ($file = readdir($dir))) {
-        if (($file != '.') && ($file != '..')) {
-            if (is_dir($src . '/' . $file)) {
-                recurse_copy($src . '/' . $file, $dst . '/' . $file);
-            } else {
-                copy($src . '/' . $file, $dst . '/' . $file);
-            }
-        }
-    }
-    closedir($dir);
-}
-
 class Deployer {
 
     public static $TEMP_DIR = "/tmp/";
@@ -60,14 +28,49 @@ class Deployer {
         $this->config = $config;
     }
 
+    public function recursive_unlink($root_dir) {
+        if (is_dir($root_dir)) {
+            $root_dir = preg_replace("'/*$'", "/", $root_dir);  // add trailing slash
+            $it = new RecursiveDirectoryIterator($root_dir, RecursiveDirectoryIterator::SKIP_DOTS);
+            $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
+            foreach($files as $file) {
+                $path = $file->getRealPath();
+                if ($file->isDir()){
+                    rmdir($path);
+                    $this->log("info", "rmdir: " . $path);
+                } else {
+                    unlink($path);
+                    $this->log("info", "unlink: " . $path);
+                }
+            }
+            rmdir($root_dir);
+            $this->log("info", "rmdir: " . $root_dir);
+        }
+    }
+
+    public function recurse_copy($src, $dst) {
+        $dir = opendir($src);
+        @mkdir($dst);
+        while (false !== ($file = readdir($dir))) {
+            if (($file != '.') && ($file != '..')) {
+                if (is_dir($src . '/' . $file)) {
+                    $this->recurse_copy($src . '/' . $file, $dst . '/' . $file);
+                } else {
+                    copy($src . '/' . $file, $dst . '/' . $file);
+                }
+            }
+        }
+        closedir($dir);
+    }
+
     private function log($level, $message) {
         echo sprintf("%s [%s] %s\n", date("Y-m-d H:i:s"), $level, $message);
         ob_flush();
         flush();
     }
 
-    private function fail() {
-        $this->log("error", "FAILED");
+    private function fail($error_message=null) {
+        $this->log("error", $error_message ? "FAILED: " . $error_message : "FAILED");
         return false;
     }
 
@@ -112,7 +115,7 @@ class Deployer {
         if ($archive->extract($new_build_path)) {
             return $this->success($new_build_path);
         }
-        return $this->fail();
+        return $this->fail($archive->error_object->getMessage());
     }
 
     private function delete_artifact($artifact_path) {
@@ -208,7 +211,8 @@ class Deployer {
         if (file_exists($this->config['current_path'])) {
             if (file_exists($this->config['old_path'])) {
                 $this->log("info", "Removing old backup...");
-                recursive_unlink($this->config['old_path']);
+                $this->recursive_unlink($this->config['old_path']);
+//                if (@rename($this->config['old_path'], __DIR__ . self::$TEMP_DIR . "/" . $this->service . "-backup-" .time())) {
                 if (file_exists($this->config['old_path'])) {
                     return $this->fail();
                 }
@@ -224,7 +228,7 @@ class Deployer {
             $this->fail();
 
             $this->log("info", "Copying new backup...");
-            recurse_copy($this->config['current_path'], $this->config['old_path']);
+            $this->recurse_copy($this->config['current_path'], $this->config['old_path']);
             if (file_exists($this->config['old_path'])) {
                 $this->success();
                 $this->log("info", "Backup finished!");
@@ -239,7 +243,7 @@ class Deployer {
         $this->log("info", "Deploying new build...");
         if (file_exists($this->config['current_path'])) {
             $this->log("info", "Removing current build...");
-            recursive_unlink($this->config['current_path']);
+            $this->recursive_unlink($this->config['current_path']);
             if (file_exists($this->config['current_path'])) {
                 return $this->fail();
             }
@@ -251,7 +255,7 @@ class Deployer {
         }
         $this->fail();
         $this->log("info", "Copying new build...");
-        recurse_copy($new_build_path, $this->config['current_path']);
+        $this->recurse_copy($new_build_path, $this->config['current_path']);
         if (!file_exists($this->config['current_path'])) {
             return $this->fail();
         }
@@ -261,7 +265,7 @@ class Deployer {
     public function finish($success, $new_build_path=null) {
         if ($new_build_path) {
             $this->log("info", "Removing extracted archive");
-            recursive_unlink($new_build_path);
+            $this->recursive_unlink($new_build_path);
             if (file_exists($new_build_path)) {
                 return $this->fail();
             }
@@ -331,9 +335,10 @@ $app->post('/rollback/{service}', function(Application $app, Request $request, $
             return new Response("Forbidden", 403, array('Content-Type' => 'text/plain'));
         }
 
-        recursive_unlink($config['current_path']);
+        $deployer = new Deployer($service, $config);
+        $deployer->recursive_unlink($config['current_path']);
         if (!@rename($config['old_path'], $config['current_path'])) {
-            recurse_copy($config['old_path'], $config['current_path']);
+            $deployer->recurse_copy($config['old_path'], $config['current_path']);
         }
 
         return "Done!";
